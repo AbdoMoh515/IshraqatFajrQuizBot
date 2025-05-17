@@ -1,0 +1,34 @@
+# Ignore Python virtual environments
+venv/
+env/
+.venv/
+booting/
+
+# Ignore env variables
+.env
+
+# Ignore other common Python files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs
+*.log
+logs/
+bot.log
