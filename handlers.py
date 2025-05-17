@@ -25,7 +25,7 @@ from utils import (
     format_quiz_as_text,
     save_questions_to_file,
     get_temp_file_path)
-from db import is_user_allowed, add_user, remove_user, list_allowed_users, upsert_user
+from filedb import is_user_allowed, add_allowed_user_from_user, list_allowed_users, upsert_user
 
 logger = logging.getLogger(__name__)
 
@@ -78,15 +78,15 @@ def get_file_processing_keyboard() -> InlineKeyboardMarkup:
     return keyboard
 
 async def start_command(message: types.Message):
-    """Handle /start command. Upsert user into users table."""
-    from db import upsert_user
+    """Handle /start command. Upsert user into users.json."""
+    from filedb import upsert_user
     user_id = message.from_user.id
-    username = message.from_user.username
-    full_name = message.from_user.full_name if hasattr(message.from_user, 'full_name') else None
+    username = message.from_user.username or ''
+    first_name = message.from_user.first_name if hasattr(message.from_user, 'first_name') else ''
     try:
-        success = upsert_user(user_id, username, full_name)
+        success = upsert_user(user_id, username, first_name)
         if not success:
-            await message.reply("⚠️ Could not store your user info in the database. Please try again later.")
+            await message.reply("⚠️ Could not store your user info. Please try again later.")
     except Exception as e:
         import logging
         logging.exception("Failed to upsert user on /start")
@@ -95,9 +95,10 @@ async def start_command(message: types.Message):
     await message.answer(
         "👋 Welcome to the Quiz Bot!\n\n"
         "This bot can:\n"
-        "1. Create quizzes from PDF or text files\n"
-        "2. Extract forwarded quizzes into text format\n\n"
-        "Use the keyboard below to control the bot.",
+        "- Extract quizzes from PDF/text\n"
+        "- Extract quizzes from forwarded messages\n"
+        "- Format Telegram quizzes as text\n\n"
+        "Use the menu or send /help for more info.",
         reply_markup=get_main_keyboard()
     )
 

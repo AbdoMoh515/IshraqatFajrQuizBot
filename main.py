@@ -22,7 +22,7 @@ from handlers import (
     handle_text_message
 )
 from handlers_admin import (
-    adduser_command,
+    allow_user_command,
     removeuser_command,
     listusers_command,
     myaccess_command,
@@ -52,7 +52,7 @@ dp.message.register(handle_file, lambda m: m.document)
 dp.message.register(handle_forwarded_quiz, lambda m: m.forward_origin and m.poll and m.poll.type == 'quiz')
 dp.message.register(handle_direct_quiz, lambda m: m.poll and m.poll.type == 'quiz' and not m.forward_origin)
 dp.message.register(handle_text_message, lambda m: m.text and not m.text.startswith('/'))
-dp.message.register(adduser_command, Command("adduser"))
+dp.message.register(allow_user_command, Command("allow_user"))
 dp.message.register(removeuser_command, Command("removeuser"))
 dp.message.register(listusers_command, Command("listusers"))
 dp.message.register(myaccess_command, Command("myaccess"))

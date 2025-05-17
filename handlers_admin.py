@@ -1,19 +1,17 @@
 from aiogram import types
 from aiogram.filters import CommandObject
-from db import is_user_allowed, add_user, remove_user, list_allowed_users, upsert_user, get_user_by_id, list_all_users, add_allowed_user_from_user
+from filedb import is_user_allowed, add_allowed_user_from_user, list_allowed_users, list_all_users, get_user_by_id, remove_allowed_user
 
 # Replace with your actual Telegram admin IDs
 ADMIN_IDS = [1162043946]
 
-async def adduser_command(message: types.Message, command: CommandObject):
-    """Admin: Promote a user from users table to allowed_users by user_id."""
-    if message.from_user.id in ADMIN_IDS:
-        pass  # Allow admin
-    else:
-        await message.reply("You are not authorized to add users.")
+async def allow_user_command(message: types.Message, command: CommandObject):
+    """Admin: Allow a user by user_id from users.json to allowed_users.json."""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply("You are not authorized to allow users.")
         return
     if not command.args:
-        await message.reply("Usage: /adduser <user_id>")
+        await message.reply("Usage: /allow_user <user_id>")
         return
     try:
         user_id = int(command.args.strip())
@@ -25,7 +23,7 @@ async def adduser_command(message: types.Message, command: CommandObject):
         await message.reply(f"User <code>{user_id}</code> is not in the users list. They must send /start first.", parse_mode="HTML")
         return
     if add_allowed_user_from_user(user):
-        await message.reply(f"User <code>{user_id}</code> ({user['full_name']}) promoted to allowed users.", parse_mode="HTML")
+        await message.reply(f"User <code>{user_id}</code> (<b>{user['first_name']}</b>) promoted to allowed users.", parse_mode="HTML")
     else:
         await message.reply("Failed to add user to allowed_users.")
 
@@ -46,9 +44,7 @@ async def removeuser_command(message: types.Message, command: CommandObject):
 
 async def listusers_command(message: types.Message):
     """Admin: List all allowed users."""
-    if message.from_user.id in ADMIN_IDS:
-        pass  # Allow admin
-    else:
+    if message.from_user.id not in ADMIN_IDS:
         await message.reply("You are not authorized to list users.")
         return
     users = list_allowed_users()
@@ -56,12 +52,12 @@ async def listusers_command(message: types.Message):
         await message.reply("No allowed users found.")
         return
     msg = "Allowed users:\n" + "\n".join([
-        f"<b>User:</b> {u['username'] or 'N/A'}\n<b>User ID:</b> <code>{u['user_id']}</code>\n<b>Added:</b> {u['added_at']}" for u in users
+        f"<b>User:</b> {u['username'] or 'N/A'}\n<b>User ID:</b> <code>{u['id']}</code>" for u in users
     ])
     await message.reply(msg, parse_mode="HTML")
 
 async def userlist_command(message: types.Message):
-    """Admin: List all users in the users table."""
+    """Admin: List all users in users.json."""
     if message.from_user.id not in ADMIN_IDS:
         await message.reply("You are not authorized to list all users.")
         return
@@ -69,8 +65,8 @@ async def userlist_command(message: types.Message):
     if not users:
         await message.reply("No users found.")
         return
-    msg = "All users in users table:\n" + "\n".join([
-        f"<b>User:</b> {u['username'] or 'N/A'}\n<b>User ID:</b> <code>{u['user_id']}</code>\n<b>Name:</b> {u['full_name'] or 'N/A'}\n<b>First Seen:</b> {u['first_seen']}" for u in users
+    msg = "All users in users.json:\n" + "\n".join([
+        f"<b>User:</b> {u['username'] or 'N/A'}\n<b>User ID:</b> <code>{u['id']}</code>\n<b>Name:</b> {u['first_name'] or 'N/A'}\n<b>Date Joined:</b> {u['date_joined']}" for u in users
     ])
     await message.reply(msg, parse_mode="HTML")
 
