@@ -291,10 +291,11 @@ async def handle_forwarded_quiz(message: types.Message):
         if hasattr(quiz, 'correct_option_id'):
             logger.info(f"Correct option ID: {quiz.correct_option_id}")
         
-        # Store the quiz
+        # Store the quiz (only in memory, do not send question now)
         user_quiz_batches[user_id]['quizzes'].append(quiz)
 
         count = len(user_quiz_batches[user_id]['quizzes'])
+        # Only show the Finish Extraction button, do not send any extracted question
         await message.reply(
             f"📥 Quiz saved ({count})\n"
             "Press 'Finish Extraction' when done",
@@ -453,12 +454,29 @@ async def cancel_processing_callback(callback_query: types.CallbackQuery):
 
 async def handle_direct_quiz(message: types.Message):
     """
-    Process quizzes sent directly (not forwarded) and show the correct answer.
+    Handle quizzes sent directly (not forwarded): store in temp per-user buffer and show Finish button.
     """
     try:
+        user_id = message.from_user.id
+        # Only allow if user is in the correct state
+        if user_id not in user_states or user_states[user_id] != States.COLLECTING_FORWARDED_QUIZZES:
+            return
         quiz = message.poll
-        quiz_text = await format_quiz_as_text(quiz)
-        await message.reply(f"Extracted Quiz:\n\n{quiz_text}")
+        # Initialize if not exists
+        if user_id not in user_quiz_batches:
+            user_quiz_batches[user_id] = {
+                'quizzes': [],
+                'expires_at': datetime.now() + timedelta(hours=1)
+            }
+        # Store the quiz (do not send extracted data now)
+        user_quiz_batches[user_id]['quizzes'].append(quiz)
+        count = len(user_quiz_batches[user_id]['quizzes'])
+        # Only show the Finish Extraction button
+        await message.reply(
+            f"📥 Quiz saved ({count})\n"
+            "Press 'Finish Extraction' when done",
+            reply_markup=get_quiz_creation_keyboard()
+        )
     except Exception as e:
         logger.error(f"Error processing direct quiz: {e}", exc_info=True)
         await message.reply("❌ Error processing the direct quiz")
