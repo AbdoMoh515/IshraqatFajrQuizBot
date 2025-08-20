@@ -9,6 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.types import BotCommand
 
 from config import TELEGRAM_TOKEN, LOG_CHANNEL_ID
+from filedb import load_allowed_users_cache
 from handlers import (
     start_command, 
     help_command, 
@@ -41,6 +42,7 @@ bot = Bot(
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 dp = Dispatcher()
+
 
 # Register command handlers
 dp.message.register(start_command, CommandStart())
@@ -79,7 +81,7 @@ async def error_handler(event, exception):
     except Exception as e:
         logger.error(f"Failed to send error to log channel: {e}")
 
-async def set_commands():
+async def set_commands(bot: Bot):
     """Set bot commands in the menu"""
     commands = [
         BotCommand(command="start", description="Start the bot"),
@@ -94,8 +96,11 @@ async def main():
     logger.info("Deleting webhook...")
     await bot.delete_webhook()
     
+    # Load the allowed users cache
+    load_allowed_users_cache()
+
     # Set bot commands
-    await set_commands()
+    await set_commands(bot)
     
     # Send startup notification
     try:
