@@ -17,7 +17,7 @@ from aiogram.types import (
     Message
 )
 
-from config import MIN_INTERVAL_BETWEEN_FILES
+from config import MIN_INTERVAL_BETWEEN_FILES, ADMIN_IDS
 from utils import (
     extract_text_from_file, 
     extract_questions_from_text, 
@@ -26,36 +26,19 @@ from utils import (
     save_questions_to_file,
     get_temp_file_path)
 from filedb import is_user_allowed, add_allowed_user_from_user, list_allowed_users, upsert_user
+from keyboards import get_main_keyboard, get_admin_keyboard
+from handlers_admin import handle_admin_text_message
+from states import user_states, States
 
 logger = logging.getLogger(__name__)
 
 # Storage for temporary quiz batches
 user_quiz_batches = {}
 # Rate limiting
-user_last_file_time = {}
-# User states
-user_states = {}
-
-# Define state constants
-class States:
-    IDLE = "idle"
-    WAITING_FOR_FILE = "waiting_for_file"
-    EXTRACTING_QUIZZES = "extracting_quizzes"
-    COLLECTING_FORWARDED_QUIZZES = "collecting_forwarded_quizzes"
+user_last_file_time: Dict[int, float] = {}
+quiz_counter: Dict[int, int] = {}  # To manage sequential quiz numbering
 
 # Create keyboards
-def get_main_keyboard() -> ReplyKeyboardMarkup:
-    """Create the main keyboard"""
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="📝 Create Quiz")],
-            [KeyboardButton(text="📥 Extract Quizzes from Forwards")],
-            [KeyboardButton(text="❓ Help")]
-        ],
-        resize_keyboard=True,
-        one_time_keyboard=False
-    )
-    return keyboard
 
 def get_quiz_creation_keyboard() -> InlineKeyboardMarkup:
     """Create the quiz creation keyboard"""
@@ -99,7 +82,7 @@ async def start_command(message: types.Message):
         "- Extract quizzes from forwarded messages\n"
         "- Format Telegram quizzes as text\n\n"
         "Use the menu or send /help for more info.",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_main_keyboard(user_id)
     )
 
 async def help_command(message: types.Message):
@@ -119,7 +102,7 @@ async def help_command(message: types.Message):
         "- Forward quizzes to me\n"
         "- Press 'Finish Extraction' when done\n"
         "- I'll send all quizzes in a single text message",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_main_keyboard(message.from_user.id)
     )
 
 async def handle_create_quiz_button(message: types.Message):
@@ -155,156 +138,138 @@ async def handle_extract_quizzes_button(message: types.Message):
         reply_markup=get_quiz_creation_keyboard()
     )
 
-async def handle_file(message: types.Message):
-    """Process PDF or text file"""
+async def process_quiz_extraction(message: types.Message, text: str):
+    """Helper function to process extracted text and send quizzes."""
+    user_id = message.from_user.id
     try:
-        user_id = message.from_user.id
-        
-        # Check if user is in the correct state
-        if user_id not in user_states or user_states[user_id] != States.WAITING_FOR_FILE:
-            return
-        
-        # Rate limiting
-        current_time = datetime.now().timestamp()
-        if user_id in user_last_file_time:
-            if (diff := current_time - user_last_file_time[user_id]) < MIN_INTERVAL_BETWEEN_FILES:
-                await message.reply(f"⏳ Please wait {int(MIN_INTERVAL_BETWEEN_FILES - diff)} seconds")
-                return
-        
-        user_last_file_time[user_id] = current_time
-
-        # Validate file type
-        file_name = message.document.file_name.lower()
-        if not (file_name.endswith('.pdf') or file_name.endswith('.txt')):
-            await message.reply("❌ Please send only PDF or text files")
-            return
-
-        processing_msg = await message.reply("🔄 Processing file...")
-
-        # Download file
-        file_stream = BytesIO()
-        await message.bot.download(message.document, destination=file_stream)
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file_name)[1]) as temp_file:
-            temp_file.write(file_stream.getvalue())
-            temp_path = temp_file.name
-
-        # Extract text
-        text = await extract_text_from_file(temp_path)
         if not text.strip():
-            await message.reply("❌ No text found in the file")
+            await message.reply("❌ The provided text is empty.")
             return
 
-        logger.info(f"Extracted text:\n{text[:500]}...")
-
-        # Extract questions
+        logger.info(f"Processing text for quiz extraction (user: {user_id})...")
+        
+        # Reset the quiz counter for the user at the start of a new extraction
+        quiz_counter[user_id] = 1
+        
         questions, skipped = extract_questions_from_text(text)
+
         if not questions:
             await message.reply(
-                "❌ No questions found\n\n"
-                "Make sure the format is:\n"
-                "1. Question text?\n"
-                "a) First option\n"
-                "b) Second option\n"
-                "c) Third option\n"
-                "d) Fourth option\n"
-                "Answer: c) correct answer"
+                "❌ No valid questions found. Please check the format and try again.",
+                reply_markup=get_main_keyboard(user_id)
             )
+            user_states[user_id] = States.IDLE
             return
 
-        # Store extracted questions in user data for later reference
+        # Store data for potential later use (e.g., showing questions as text)
         if 'extracted_data' not in user_states:
             user_states['extracted_data'] = {}
-        
         user_states['extracted_data'][user_id] = {
             'questions': questions,
             'skipped': skipped,
             'timestamp': datetime.now()
         }
 
-        # Send as quizzes
-        sent, failed, failed_questions = await send_telegram_quizzes(message.bot, questions, message.chat.id)
-        
-        # Prepare result message
-        result_msg = f"✅ Successfully extracted {len(questions)} questions\n"
+        sent, failed, failed_questions = await send_telegram_quizzes(
+            message.bot, questions, message.chat.id, quiz_counter
+        )
+
+        result_msg = f"✅ Successfully extracted {len(questions)} questions.\n"
         result_msg += f"- Sent as quizzes: {sent}\n"
-        
-        # Add information about failed questions
         if failed > 0:
-            result_msg += f"- Failed to send: {failed}\n"
-            if failed_questions:
-                result_msg += f"  Failed question numbers: {', '.join(map(str, failed_questions))}\n"
-        
-        # Add information about skipped questions
+            result_msg += f"- Failed to send: {failed} (Numbers: {', '.join(map(str, failed_questions))})\n"
         if skipped:
-            result_msg += f"\n⚠️ Skipped {len(skipped)} questions due to format issues:\n"
-            # Show up to 5 skipped questions to avoid very long messages
-            display_skipped = skipped[:5]
-            result_msg += f"Questions {', '.join(map(str, display_skipped))}"
+            result_msg += f"\n⚠️ Skipped {len(skipped)} questions:\n"
+            for item in skipped[:5]:
+                result_msg += f"- Q#{item.get('number', '?')}: {item.get('reason', 'Unknown')}\n"
             if len(skipped) > 5:
-                result_msg += f" and {len(skipped) - 5} more"
-        
-        # Add keyboard for showing extracted questions
+                result_msg += f"...and {len(skipped) - 5} more."
+
         await message.reply(result_msg, reply_markup=get_file_processing_keyboard())
-        
-        # Update user state but don't reset completely
         user_states[user_id] = States.EXTRACTING_QUIZZES
 
     except Exception as e:
-        logger.error(f"File processing error: {e}", exc_info=True)
-        await message.reply("❌ Error processing the file")
-    finally:
-        if 'temp_path' in locals() and os.path.exists(temp_path):
-            os.remove(temp_path)
-        if 'processing_msg' in locals():
-            try:
-                await processing_msg.delete()
-            except Exception as e:
-                logger.error(f"Error deleting processing message: {e}")
-                pass
+        logger.error(f"Error during quiz extraction processing for user {user_id}: {e}", exc_info=True)
+        await message.reply("❌ An unexpected error occurred while processing the questions.")
+        user_states[user_id] = States.IDLE
 
-async def handle_forwarded_quiz(message: types.Message):
-    """Store forwarded quizzes temporarily"""
+async def handle_file(message: types.Message):
+    """Process PDF or text file."""
+    user_id = message.from_user.id
+    if user_states.get(user_id) != States.WAITING_FOR_FILE:
+        return
+
+    # Rate limiting
+    current_time = datetime.now().timestamp()
+    if user_id in user_last_file_time and (diff := current_time - user_last_file_time.get(user_id, 0)) < MIN_INTERVAL_BETWEEN_FILES:
+        await message.reply(f"⏳ Please wait {int(MIN_INTERVAL_BETWEEN_FILES - diff)} seconds.")
+        return
+    user_last_file_time[user_id] = current_time
+
+    file_name = message.document.file_name.lower()
+    if not (file_name.endswith('.pdf') or file_name.endswith('.txt')):
+        await message.reply("❌ Please send only PDF or text files.")
+        return
+
+    processing_msg = await message.reply("🔄 Processing file...")
+    temp_path = None
+    try:
+        file_stream = BytesIO()
+        await message.bot.download(message.document, destination=file_stream)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file_name)[1]) as temp_file:
+            temp_file.write(file_stream.getvalue())
+            temp_path = temp_file.name
+
+        text = await extract_text_from_file(temp_path)
+        await process_quiz_extraction(message, text)
+
+    except Exception as e:
+        logger.error(f"File processing error for user {user_id}: {e}", exc_info=True)
+        await message.reply("❌ Error processing the file.")
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+        try:
+            await processing_msg.delete()
+        except Exception:
+            pass
+
+async def handle_quiz_message(message: types.Message):
+    """
+    Handle all incoming quizzes (direct or forwarded).
+    Stores quizzes temporarily in a per-user buffer and shows the 'Finish' button.
+    """
     try:
         user_id = message.from_user.id
         
-        # Check if user is in the correct state
+        # Check if user is in the correct state to collect quizzes
         if user_id not in user_states or user_states[user_id] != States.COLLECTING_FORWARDED_QUIZZES:
             return
             
-        if not (message.forward_origin and message.poll and message.poll.type == 'quiz'):
-            return
-
-        # Initialize if not exists
+        quiz = message.poll
+        
+        # Initialize a new batch if one doesn't exist for the user
         if user_id not in user_quiz_batches:
             user_quiz_batches[user_id] = {
                 'quizzes': [],
                 'expires_at': datetime.now() + timedelta(hours=1)
             }
-
-        quiz = message.poll
         
-        # Log details about the quiz for debugging
-        logger.info(f"Received forwarded quiz: {quiz.question[:30]}...")
-        logger.info(f"Quiz options count: {len(quiz.options)}")
-        logger.info(f"Quiz has correct_option_id: {hasattr(quiz, 'correct_option_id')}")
-        if hasattr(quiz, 'correct_option_id'):
-            logger.info(f"Correct option ID: {quiz.correct_option_id}")
-        
-        # Store the quiz (only in memory, do not send question now)
+        # Add the quiz to the user's batch
         user_quiz_batches[user_id]['quizzes'].append(quiz)
-
+        
         count = len(user_quiz_batches[user_id]['quizzes'])
-        # Only show the Finish Extraction button, do not send any extracted question
+        
+        # Reply to the user with the current count and the keyboard
         await message.reply(
-            f"📥 Quiz saved ({count})\n"
-            "Press 'Finish Extraction' when done",
+            f"📥 Quiz saved ({count}).\n"
+            "Forward more quizzes or press 'Finish Extraction' when you are done.",
             reply_markup=get_quiz_creation_keyboard()
         )
 
     except Exception as e:
-        logger.error(f"Quiz storage error: {e}", exc_info=True)
-        await message.reply("❌ Error saving the quiz")
+        logger.error(f"Error processing quiz message: {e}", exc_info=True)
+        await message.reply("❌ An error occurred while saving the quiz.")
 
 async def finish_extraction_callback(callback_query: types.CallbackQuery):
     """Handle finish extraction button press"""
@@ -436,7 +401,7 @@ async def cancel_extraction_callback(callback_query: types.CallbackQuery):
     user_states[user_id] = States.IDLE
     
     await callback_query.answer("Extraction cancelled")
-    await callback_query.message.reply("❌ Quiz extraction cancelled", reply_markup=get_main_keyboard())
+    await callback_query.message.reply("❌ Quiz extraction cancelled", reply_markup=get_main_keyboard(user_id))
 
 async def cancel_processing_callback(callback_query: types.CallbackQuery):
     """Handle cancel processing button press"""
@@ -450,48 +415,47 @@ async def cancel_processing_callback(callback_query: types.CallbackQuery):
     user_states[user_id] = States.IDLE
     
     await callback_query.answer("Processing cancelled")
-    await callback_query.message.reply("❌ Processing cancelled", reply_markup=get_main_keyboard())
+    await callback_query.message.reply("❌ Processing cancelled", reply_markup=get_main_keyboard(user_id))
 
-async def handle_direct_quiz(message: types.Message):
-    """
-    Handle quizzes sent directly (not forwarded): store in temp per-user buffer and show Finish button.
-    """
-    try:
-        user_id = message.from_user.id
-        # Only allow if user is in the correct state
-        if user_id not in user_states or user_states[user_id] != States.COLLECTING_FORWARDED_QUIZZES:
-            return
-        quiz = message.poll
-        # Initialize if not exists
-        if user_id not in user_quiz_batches:
-            user_quiz_batches[user_id] = {
-                'quizzes': [],
-                'expires_at': datetime.now() + timedelta(hours=1)
-            }
-        # Store the quiz (do not send extracted data now)
-        user_quiz_batches[user_id]['quizzes'].append(quiz)
-        count = len(user_quiz_batches[user_id]['quizzes'])
-        # Only show the Finish Extraction button
-        await message.reply(
-            f"📥 Quiz saved ({count})\n"
-            "Press 'Finish Extraction' when done",
-            reply_markup=get_quiz_creation_keyboard()
-        )
-    except Exception as e:
-        logger.error(f"Error processing direct quiz: {e}", exc_info=True)
-        await message.reply("❌ Error processing the direct quiz")
+
+async def handle_admin_panel_button(message: types.Message):
+    """Handle the Admin Panel button press."""
+    user_id = message.from_user.id
+    if user_id in ADMIN_IDS:
+        user_states[user_id] = States.ADMIN_PANEL
+        await message.answer("👑 Welcome to the Admin Panel!", reply_markup=get_admin_keyboard())
+
 
 async def handle_text_message(message: types.Message):
-    """Handle text messages for button presses"""
+    """Handle text messages for button presses or direct quiz text."""
+    user_id = message.from_user.id
     text = message.text
-    
+
+    # Check for button presses first
     if text == "📝 Create Quiz":
         await handle_create_quiz_button(message)
+        return
     elif text == "📥 Extract Quizzes from Forwards":
         await handle_extract_quizzes_button(message)
+        return
     elif text == "❓ Help":
         await help_command(message)
+        return
+    elif text == "👑 Admin Panel":
+        await handle_admin_panel_button(message)
+        return
+
+    # Route to admin handler if in admin panel
+    if user_states.get(user_id) == States.ADMIN_PANEL:
+        await handle_admin_text_message(message)
+        return
+
+    # If not a button, check if user is in a state to send quiz text
+    if user_states.get(user_id) == States.WAITING_FOR_FILE:
+        processing_msg = await message.reply("🔄 Processing text...")
+        await process_quiz_extraction(message, text)
+        await processing_msg.delete()
     else:
         # For any other text message, remind the user to use the keyboard
-        await message.reply("Please use the keyboard buttons to interact with the bot.", 
-                           reply_markup=get_main_keyboard())
+        await message.reply("Please use the keyboard buttons or send /start to begin.", 
+                           reply_markup=get_main_keyboard(user_id))

@@ -13,8 +13,7 @@ from handlers import (
     start_command, 
     help_command, 
     handle_file, 
-    handle_forwarded_quiz,
-    handle_direct_quiz,  # <-- import the new handler
+    handle_quiz_message,
     finish_extraction_callback,
     cancel_extraction_callback,
     show_questions_callback,
@@ -49,8 +48,7 @@ dp.message.register(help_command, Command("help"))
 
 # Register message handlers
 dp.message.register(handle_file, lambda m: m.document)
-dp.message.register(handle_forwarded_quiz, lambda m: m.forward_origin and m.poll and m.poll.type == 'quiz')
-dp.message.register(handle_direct_quiz, lambda m: m.poll and m.poll.type == 'quiz' and not m.forward_origin)
+dp.message.register(handle_quiz_message, lambda m: m.poll and m.poll.type == 'quiz')
 dp.message.register(handle_text_message, lambda m: m.text and not m.text.startswith('/'))
 dp.message.register(allow_user_command, Command("allow_user"))
 dp.message.register(removeuser_command, Command("removeuser"))

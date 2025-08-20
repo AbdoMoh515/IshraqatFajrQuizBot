@@ -1,9 +1,11 @@
 from aiogram import types
 from aiogram.filters import CommandObject
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from filedb import is_user_allowed, add_allowed_user_from_user, list_allowed_users, list_all_users, get_user_by_id, remove_allowed_user
+from config import ADMIN_IDS
+from keyboards import get_main_keyboard
+from states import user_states, States
 
-# Replace with your actual Telegram admin IDs
-ADMIN_IDS = [1162043946]
 
 async def allow_user_command(message: types.Message, command: CommandObject):
     """Admin: Allow a user by user_id from users.json to allowed_users.json."""
@@ -37,7 +39,7 @@ async def removeuser_command(message: types.Message, command: CommandObject):
         await message.reply("Usage: /removeuser <user_id>")
         return
     user_id = int(command.args.strip())
-    if remove_user(user_id):
+    if remove_allowed_user(user_id):
         await message.reply(f"User {user_id} removed.")
     else:
         await message.reply("Failed to remove user.")
@@ -70,6 +72,26 @@ async def userlist_command(message: types.Message):
     ])
     await message.reply(msg, parse_mode="HTML")
 
+async def handle_admin_text_message(message: types.Message):
+    """Handle text messages for admin panel button presses."""
+    user_id = message.from_user.id
+    if user_id not in ADMIN_IDS:
+        return  # Should not happen if they see the buttons
+
+    text = message.text
+    if text == "📋 List Allowed Users":
+        await listusers_command(message)
+    elif text == "👥 List All Users":
+        await userlist_command(message)
+    elif text == "✅ Allow User":
+        await message.reply("Please use the command: /allow_user <user_id>")
+    elif text == "❌ Remove User":
+        await message.reply("Please use the command: /removeuser <user_id>")
+    elif text == "⬅️ Back to Main Menu":
+        user_states[user_id] = States.IDLE
+        await message.answer("Returning to the main menu.", reply_markup=get_main_keyboard(user_id))
+
+
 async def myaccess_command(message: types.Message):
     if message.from_user.id in ADMIN_IDS:
         await message.reply("✅ You are the bot admin and have full access.")
@@ -86,13 +108,16 @@ class AccessControlMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         # Allow /start, /help, and admin commands without restriction
         if hasattr(event, 'text') and event.text and event.text.startswith((
-            '/start', '/help', '/adduser', '/removeuser', '/listusers')):
+            '/start', '/help', '/allow_user', '/removeuser', '/listusers')):
             return await handler(event, data)
+
         # Always allow admin
         user_id = getattr(event.from_user, 'id', None)
         if user_id in ADMIN_IDS:
             return await handler(event, data)
+
         # Check DB-based access for non-admins
         if user_id and is_user_allowed(user_id):
             return await handler(event, data)
+            
         await event.reply("❌ You are not authorized to use this bot.")

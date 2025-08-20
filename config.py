@@ -9,6 +9,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 print("DEBUG TELEGRAM_TOKEN:", repr(TELEGRAM_TOKEN))  # Debug print for troubleshooting
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", "-1002300659776"))
+ADMIN_IDS = [int(admin_id) for admin_id in os.getenv("ADMIN_IDS", "").split(',') if admin_id]
 
 # Rate limiting
 MIN_INTERVAL_BETWEEN_FILES = int(os.getenv("MIN_INTERVAL_BETWEEN_FILES", "60"))  # seconds

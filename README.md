@@ -12,6 +12,10 @@ A Telegram bot that processes quiz questions from PDF or text files and handles 
 - **Keyboard Controls**: Easy-to-use keyboard buttons for all operations
 - **Error Handling**: Robust error handling with detailed logs
 
+## Documentation
+
+For a detailed explanation of the project structure, key components, and functions, please see the [Code Documentation](CODE_DOCUMENTATION.md).
+
 ## Setup Instructions
 
 ### Prerequisites

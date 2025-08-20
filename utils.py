@@ -67,238 +67,150 @@ async def extract_text_from_file(file_path: str) -> str:
         logger.error(f"Error extracting text from file: {str(e)}", exc_info=True)
         return ""
 
-def extract_questions_from_text(text: str) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """
-    Extract questions and answers from text with flexible format support.
-    
+def extract_questions_from_text(text: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+    """Extract questions and answers from text using a robust, multi-stage approach.
+
     Args:
-        text: Text extracted from file
-        
+        text: The text extracted from the file.
+
     Returns:
-        Tuple of (list of questions with options and correct answers, list of skipped question numbers)
+        A tuple containing:
+        - A list of successfully parsed question dictionaries.
+        - A list of dictionaries for skipped questions, including the reason for skipping.
     """
-    # Clean up text
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    text = re.sub(r'\r\n', '\n', text)  # Normalize line endings
-    
-    # Log diagnostic info
-    logger.info(f"Text extracted (first 500 chars): {text[:500]}...")
+    text = text.replace('\r\n', '\n').strip()
     logger.info(f"Total length of extracted text: {len(text)} characters")
-    
+
     questions = []
-    extracted_questions: Set[str] = set()
     skipped_questions = []
-    
-    # Try to extract questions using a more flexible approach
-    # First split the text into potential question blocks
-    question_blocks = re.split(r'\n\s*\n|\n(?=\d+\.?\s)', text)
-    
-    logger.info(f"Found {len(question_blocks)} potential question blocks")
-    
+    extracted_question_texts = set()
+
+    # Split text into blocks based on question numbering. This is more reliable.
+    question_blocks = re.split(r'\n(?=\s*(?:Q\s*)?\d+\s*[.\-)])', text)
+    logger.info(f"Found {len(question_blocks)} potential question blocks.")
+
     for i, block in enumerate(question_blocks):
-        try:
-            # Skip empty blocks
-            if not block.strip():
-                continue
-                
-            # Try to identify if this is a question block
-            # Look for options pattern (a), b), c), d), etc.) - support more than just a-d
-            options_pattern = re.findall(r'\n[a-z]\)\s*[^\n]+', block, re.IGNORECASE)
-            if len(options_pattern) < 2:  # Need at least 2 options
-                continue
-                
-            # Look for answer line - support more options (a-z)
-            answer_match = re.search(r'\n(?:\*?Answer|\*?Answers?):\s*([a-zA-Z])', block)
-            if not answer_match:
-                logger.warning(f"Block {i+1} has options but no answer line: {block[:100]}...")
-                skipped_questions.append(str(i+1))
-                continue
-                
-            # Extract question number if present
-            question_num_match = re.match(r'^\s*(\d+)[\.\)]?\s*', block)
-            question_num = question_num_match.group(1) if question_num_match else str(i+1)
-            
-            # Extract question text
-            if question_num_match:
-                # Remove question number from the beginning
-                question_text = block[question_num_match.end():].strip()
-            else:
-                question_text = block.strip()
-                
-            # Find where options start - support more options (a-z)
-            options_start = re.search(r'\n[a-z]\)\s*', question_text, re.IGNORECASE)
-            if not options_start:
-                logger.warning(f"Cannot find options start in block {i+1}")
-                skipped_questions.append(question_num)
-                continue
-                
-            # Split question text and options
-            pure_question = question_text[:options_start.start()].strip()
-            options_text = question_text[options_start.start():].strip()
-            
-            # Extract options - support more options (a-z)
-            options_matches = re.findall(r'\n([a-z])\)\s*([^\n]+)', '\n' + options_text, re.IGNORECASE)
-            if len(options_matches) < 2:
-                logger.warning(f"Not enough options found in block {i+1}")
-                skipped_questions.append(question_num)
-                continue
-                
-            # Sort options by letter
-            options_matches.sort(key=lambda x: x[0])
-            
-            # Extract options text
-            options = [opt[1].strip() for opt in options_matches]
-            
-            # Get correct answer - normalize to lowercase for consistency
-            correct_answer = answer_match.group(1).lower()
-            correct_index = ord(correct_answer) - ord('a')
-            
-            # Ensure correct answer is valid for the options we found
-            if correct_index < 0 or correct_index >= len(options_matches):
-                logger.warning(f"Question {question_num} has invalid correct answer: {correct_answer}, options count: {len(options_matches)}")
-                skipped_questions.append(question_num)
-                continue
-            
-            # Ensure correct answer is within range
-            if 0 <= correct_index < len(options):
-                # Create unique ID for question
-                question_id = pure_question[:50]
-                if question_id not in extracted_questions:
-                    questions.append({
-                        "question_num": question_num,
-                        "question": pure_question,
-                        "options": options,
-                        "correct_option_id": correct_index
-                    })
-                    extracted_questions.add(question_id)
-                    logger.info(f"Added new question {question_num}: {question_id}")
-                else:
-                    logger.info(f"Skipped duplicate question {question_num}: {question_id}")
-            else:
-                skipped_questions.append(question_num)
-                logger.warning(f"Question {question_num} has invalid correct_index: {correct_index}, options count: {len(options)}")
-        except Exception as e:
-            skipped_questions.append(str(i+1))
-            logger.warning(f"Error extracting question block {i+1}: {str(e)}")
+        block = block.strip()
+        if not block:
             continue
-    
-    # If we didn't find any questions with the flexible approach, try the regex patterns
-    if not questions:
-        logger.info("No questions found with flexible approach, trying regex patterns")
-        
-        # Patterns for different question formats
-        patterns = [
-            # Basic pattern with options a) b) c) d) etc. and answer - support more options
-            r"(?:(\d+)[-\.]?\s*)?(.*?)\n+([a-z]\)\s*.*?(?:\n[a-z]\)\s*.*?){1,20})\n+(?:\*?Answer|\*?Answers?):\s*([a-z])\)?",
+
+        try:
+            # 1. Extract Question Number and Text (up to the first option)
+            q_match = re.match(r'(?:Q\s*)?(\d+)\s*[.\-)]\s*(.*?)(?=\n\s*[a-zA-Z][.)])', block, re.DOTALL)
+            if not q_match:
+                logger.warning(f"Skipping block {i+1}: No question pattern matched. Content: {block[:200]}...")
+                skipped_questions.append({'number': f'Block {i+1}', 'reason': 'Could not find question number or text.'})
+                continue
+
+            question_num = q_match.group(1)
+            question_text = q_match.group(2).strip().replace('\n', ' ')
+
+            if not question_text:
+                skipped_questions.append({'number': question_num, 'reason': 'Empty question text.'})
+                continue
+
+            if question_text in extracted_question_texts:
+                skipped_questions.append({'number': question_num, 'reason': 'Duplicate question.'})
+                continue
+
+            # 2. Extract Answer (must exist)
+            answer_match = re.search(r'Answer\s*:\s*([a-zA-Z])', block, re.IGNORECASE)
+            if not answer_match:
+                logger.warning(f"Skipping Q#{question_num}: No answer line found.")
+                skipped_questions.append({'number': question_num, 'reason': 'No answer line found.'})
+                continue
+            correct_letter = answer_match.group(1).lower()
+
+            # 3. Extract Options (from first option to just before the answer line)
+            options_part_match = re.search(r'((?:\n\s*[a-zA-Z][.)].*?)+)(?=\n\s*Answer\s*:)', block, re.DOTALL)
+            if not options_part_match:
+                logger.warning(f"Skipping Q#{question_num}: Could not find options block before answer.")
+                skipped_questions.append({'number': question_num, 'reason': 'No options found.'})
+                continue
             
-            # Pattern with options A) B) C) D) etc. (uppercase) - support more options
-            r"(?:(\d+)[-\.]?\s*)?(.*?)\n+([A-Z]\)\s*.*?(?:\n[A-Z]\)\s*.*?){1,20})\n+(?:\*?Answer|\*?Answers?):\s*([A-Z])\)?",
+            options_text = options_part_match.group(1)
+            option_matches = re.findall(r'\n\s*([a-zA-Z])[.)]\s*(.*?)(?=\n\s*[a-zA-Z][.)]|$)', options_text, re.DOTALL)
+
+            if len(option_matches) < 2:
+                logger.warning(f"Skipping Q#{question_num}: Found only {len(option_matches)} options.")
+                skipped_questions.append({'number': question_num, 'reason': f'Found only {len(option_matches)} options.'})
+                continue
+
+            # 4. Process and Validate
+            options = [opt[1].strip().replace('\n', ' ') for opt in option_matches]
+            option_letters = [opt[0].lower() for opt in option_matches]
             
-            # Pattern with options using dots a. b. c. d. etc. - support more options
-            r"(?:(\d+)[-\.]?\s*)?(.*?)\n+([a-z]\.\s*.*?(?:\n[a-z]\.\s*.*?){1,20})\n+(?:\*?Answer|\*?Answers?):\s*([a-z])"
-        ]
-        
-        question_count = 0
-        
-        # Process each pattern
-        for i, pattern in enumerate(patterns):
-            matches = re.findall(pattern, text, re.DOTALL)
-            logger.info(f"Pattern {i+1}: Found {len(matches)} matches")
-            
-            for match in matches:
-                try:
-                    question_count += 1
-                    question_num = match[0].strip() if match[0] else str(question_count)
-                    question_text = match[1].strip()
-                    
-                    # Extract all options
-                    options_text = match[2].strip()
-                    
-                    # Extract options based on format - support more options (a-z)
-                    if '.' in options_text and not ')' in options_text:  # a. b. c. format
-                        options_raw = re.findall(r'([a-zA-Z])\.\s*(.*?)(?=\n[a-zA-Z]\.|$)', options_text, re.DOTALL)
-                    else:  # a) b) c) format
-                        options_raw = re.findall(r'([a-zA-Z]\))\s*(.*?)(?=\n[a-zA-Z]\)|$)', options_text, re.DOTALL)
-                    
-                    # Normalize correct answer
-                    correct_answer = match[3].strip().lower()
-                    if correct_answer.endswith(')'):
-                        correct_answer = correct_answer[:-1]
-                    correct_index = ord(correct_answer) - ord('a')
-                    
-                    # Extract option text
-                    options = []
-                    for opt in options_raw:
-                        option_text = opt[1].strip()
-                        options.append(option_text)
-                    
-                    # Ensure correct answer is within range
-                    if 0 <= correct_index < len(options):
-                        # Create unique ID for question
-                        question_id = question_text[:50]
-                        if question_id not in extracted_questions:
-                            questions.append({
-                                "question_num": question_num,
-                                "question": question_text,
-                                "options": options,
-                                "correct_option_id": correct_index
-                            })
-                            extracted_questions.add(question_id)
-                            logger.info(f"Added new question: {question_id}")
-                        else:
-                            logger.info(f"Skipped duplicate question: {question_id}")
-                    else:
-                        skipped_questions.append(question_num)
-                        logger.warning(f"Question {question_num} has invalid correct_index: {correct_index}, options count: {len(options)}")
-                except Exception as e:
-                    skipped_questions.append(str(question_count))
-                    logger.warning(f"Error extracting question {question_count}: {str(e)}")
-                    continue
-    
+            try:
+                correct_index = option_letters.index(correct_letter)
+            except ValueError:
+                logger.warning(f"Skipping Q#{question_num}: Correct answer letter '{correct_letter}' not in options {option_letters}.")
+                skipped_questions.append({'number': question_num, 'reason': f'Correct answer letter "{correct_letter}" not in options {option_letters}.'})
+                continue
+
+            questions.append({
+                'question_num': question_num,
+                'question': question_text,
+                'options': options,
+                'correct_option_id': correct_index
+            })
+            extracted_question_texts.add(question_text)
+            logger.info(f"Successfully parsed question {question_num}: {question_text[:60]}...")
+
+        except Exception as e:
+            logger.error(f"Error processing block {i+1}: {e}\nContent: {block[:200]}...", exc_info=True)
+            skipped_questions.append({'number': f'Block {i+1}', 'reason': f'An unexpected error occurred: {e}'})
+
     return questions, skipped_questions
 
-async def send_telegram_quizzes(bot: Bot, questions: List[Dict[str, Any]], chat_id: int) -> Tuple[int, int, List[str]]:
-    """
-    Send questions as Telegram quizzes with sequential numbering
-    
+async def send_telegram_quizzes(bot: Bot, questions: List[Dict[str, Any]], chat_id: int, quiz_counter: Dict[int, int]) -> Tuple[int, int, List[str]]:
+    """Send questions as Telegram quizzes with sequential numbering.
+
     Args:
-        bot: Telegram bot instance
-        questions: List of question dictionaries
-        chat_id: Chat ID to send quizzes to
-        
+        bot: Telegram bot instance.
+        questions: List of question dictionaries.
+        chat_id: Chat ID to send quizzes to.
+        quiz_counter: A dictionary to track the current quiz number for each user.
+
     Returns:
-        Tuple of (sent count, error count, list of failed question numbers)
+        A tuple containing the number of sent quizzes, the number of errors,
+        and a list of failed question numbers.
     """
     sent_count = 0
     error_count = 0
     failed_questions = []
-    
-    for i, q in enumerate(questions, 1):
+
+    # Get the current question number for this user, default to 1 if not set
+    current_question_num = quiz_counter.get(chat_id, 1)
+
+    for q in questions:
         try:
-            # Add numbering to the question
             original_question = q['question']
-            # Check if the question already starts with a number
-            if not re.match(r'^\d+\.\s', original_question):
-                numbered_question = f"{i}. {original_question}"
-            else:
-                # Replace existing number with sequential number
-                numbered_question = re.sub(r'^\d+\.\s', f"{i}. ", original_question)
             
+            # Remove any existing numbering to avoid confusion
+            unnumbered_question = re.sub(r'^\d+\s*[.)]\s*', '', original_question)
+            
+            # Add the new sequential number
+            numbered_question = f"{current_question_num}. {unnumbered_question}"
+
             await bot.send_poll(
                 chat_id=chat_id,
                 question=numbered_question,
                 options=q['options'],
                 type='quiz',
                 correct_option_id=q['correct_option_id'],
-                is_anonymous=False
+                is_anonymous=True,
             )
             sent_count += 1
+            current_question_num += 1
             await asyncio.sleep(0.5)  # Avoid flood limits
         except Exception as e:
             logger.error(f"Error sending quiz {q.get('question_num', '?')}: {e}")
             error_count += 1
             failed_questions.append(q.get('question_num', '?'))
-    
+
+    # Update the counter for the user for the next batch
+    quiz_counter[chat_id] = current_question_num
+
     return sent_count, error_count, failed_questions
 
 async def format_quiz_as_text(quiz: Poll, question_num: Optional[int] = None) -> str:
@@ -361,16 +273,15 @@ def save_questions_to_file(questions: List[str], file_path: str) -> bool:
         return False
 
 def get_temp_file_path(user_id: int, prefix: str = "quiz_", suffix: str = ".txt") -> str:
-    """
-    Generate a temporary file path for a user
-    
+    """Generate a temporary file path for a user.
+
     Args:
-        user_id: User ID
-        prefix: File prefix
-        suffix: File suffix
-        
+        user_id: User ID.
+        prefix: File prefix.
+        suffix: File suffix.
+
     Returns:
-        Path to temporary file
+        Path to temporary file.
     """
     os.makedirs("temp", exist_ok=True)
     return os.path.join("temp", f"{prefix}{user_id}{suffix}")
